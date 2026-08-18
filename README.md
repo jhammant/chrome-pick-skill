@@ -1,124 +1,106 @@
 # chrome-pick
 
-**Claude can see your Chrome browsers. It cannot tell them apart.**
+Know which Chrome is which before Claude touches it.
+
+![license](https://img.shields.io/badge/license-MIT-blue)
+![platform](https://img.shields.io/badge/platform-macOS-lightgrey)
+![deps](https://img.shields.io/badge/dependencies-none-brightgreen)
+![tests](https://img.shields.io/badge/tests-12-brightgreen)
+
+Claude sees your connected browsers like this:
 
 ```json
 [{"deviceId":"e324d16a-...","name":"Browser 1","osPlatform":"macOS","isLocal":true},
  {"deviceId":"2175f1c8-...","name":"Browser 2","osPlatform":"macOS","isLocal":true}]
 ```
 
-That is the whole of what `list_connected_browsers` returns. Same name shape, same OS,
-both `isLocal: true` — the names are ordinals, not identities. If you have Chrome open on
-your desktop *and* on a work laptop, both signed into the same Claude account, then
-"open this page" is a coin flip. Ours landed wrong: the work laptop got navigated to a
-home router's admin UI and hit a cert error, on someone else's screen.
+Names are ordinals. Both `isLocal: true`. If Chrome is open on your desktop *and* a work
+laptop, "open this page" is a coin flip — and half the time it lands on the machine you
+are screen-sharing.
 
-`chrome-pick` gives each browser a name by finding out **where it is on the network**. It
-stands up a short-lived HTTP beacon on this Mac, has every connected Chrome fetch one URL
-from it, and reads the source IP of each request:
-
-| Source IP | Label | Meaning |
-|---|---|---|
-| `127.0.0.1` or one of this Mac's own addresses | `this-mac` | The Chrome in front of you |
-| Another RFC1918 address | `same-lan` | A different machine on your network |
-| `100.64.0.0/10` | `tailnet` | Reached you over Tailscale |
-| A public address | `remote` | Came via NAT, a relay or a port forward — named, not guessed |
-| No request arrived | `unreachable` | Different network, or a VPN on that machine |
-
-Then it hands those labels to the browser-choice question, so you pick from this:
+chrome-pick makes every connected browser fetch one URL from a temporary local server,
+then names each one by the source IP the request arrived from:
 
 ```text
-1. Browser 1 — this Mac (e324d16a)          [Recommended]
-   e324d16a-c186-4ece-944c-42905e74c5df · hit the beacon from 127.0.0.1 · macOS
-   · high confidence · just probed
-2. Browser 2 — work laptop (2175f1c8)
-   2175f1c8-b6f5-40af-8022-6ad894f689a2 · source 10.0.0.57 · work-mbp.lan
-   · Windows · high confidence · just probed
-3. Open a confirmation screen in every connected Chrome extension and let me select the right one there.
+Before                          After
+1. Browser 1                    1. Browser 1 — this Mac (e324d16a)      [Recommended]
+2. Browser 2                    2. Browser 2 — work laptop (2175f1c8)
+                                   source 10.0.0.57 · work-mbp.lan · Windows
 ```
-
-instead of this:
-
-```text
-1. Browser 1
-2. Browser 2
-```
-
-## How it works
-
-```mermaid
-flowchart TD
-  A[list_connected_browsers] --> B{cache fresh?}
-  B -->|yes| H[labelled question]
-  B -->|no| C[ask consent to probe]
-  C --> D[beacon.py start<br/>ephemeral port, TTL, token]
-  D --> E[each browser: open tab,<br/>navigate to probe URL, close tab]
-  E --> F[classify by source IP]
-  F --> G[beacon.py stop<br/>kills listener, deletes state]
-  G --> I[cache.py write]
-  I --> H
-  H --> J[you choose · always]
-```
-
-The cache lives at `~/.claude/chrome-browsers.json` and makes the common run free: no
-probing, just a well-labelled question. It re-probes only when it must — an unknown
-browser appears, the schema changes, or this Mac moves to a different LAN, where
-`10.0.0.57` no longer means what it meant yesterday. A browser merely going *offline*
-never invalidates anything; the other labels are still correct.
 
 ## Install
-
-Requires macOS, [Claude Code](https://claude.com/claude-code) with the Claude-in-Chrome
-extension connected, and `/usr/bin/python3`. No pip, no npm, no dependencies — the
-scripts are stdlib-only and pinned to the system interpreter so an active venv or asdf
-shim cannot interfere.
 
 ```sh
 git clone https://github.com/jhammant/chrome-pick-skill.git
 ln -s "$PWD/chrome-pick-skill/skill" ~/.claude/skills/chrome-pick
 ```
 
-Claude picks it up on the next session. It fires at the start of any browser task, and
-whenever you say "wrong browser", "which chrome", "that's my work laptop", or ask it to
-re-probe.
+Needs macOS, [Claude Code](https://claude.com/claude-code) with the Chrome extension
+connected, and `/usr/bin/python3`. No pip, no npm — stdlib only, pinned to the system
+interpreter so a venv or asdf shim can't interfere.
 
-## Design rules
+Claude loads it next session. It fires at the start of any browser task, and on "wrong
+browser", "which chrome", "that's my work laptop", or "re-probe".
 
-These are load-bearing, and the skill states them to Claude as rules rather than hints:
+## Labels
 
-- **It never auto-selects.** Better labels make the browser-choice question better, not
-  optional. You always choose; the skill only makes the choice an informed one.
-- **A failed probe never blocks the task and never invents a label.** It downgrades to
-  `unreachable` at low confidence and gets out of the way.
-- **It leaves nothing behind.** The beacon self-terminates on a TTL, `stop` kills the
-  listener and deletes its state, and every tab it opens, it closes. Tabs that were
-  already there are never touched.
+| Source IP | Label | Meaning |
+|---|---|---|
+| `127.0.0.1` or this Mac's own address | `this-mac` | The Chrome in front of you |
+| Other RFC1918 | `same-lan` | Another machine on your network |
+| `100.64.0.0/10` | `tailnet` | Reached you over Tailscale |
+| Public | `remote` | Via NAT, a relay or a port forward |
+| Nothing arrived | `unreachable` | Different network, or a VPN on that machine |
+
+Labels are cached in `~/.claude/chrome-browsers.json`, so the usual run costs nothing —
+no probe, just a labelled question. It re-probes only when a label could be wrong: an
+unknown browser appears, or this Mac moved to another LAN where `10.0.0.57` no longer
+means what it did yesterday. A browser going offline invalidates nothing.
+
+## How it works
+
+```mermaid
+flowchart LR
+  A[list browsers] --> B{cache fresh?}
+  B -->|yes| H[labelled question]
+  B -->|no| D[start beacon<br/>ephemeral port · token · TTL]
+  D --> E[each browser opens<br/>the probe URL, then closes]
+  E --> F[classify by source IP]
+  F --> G[stop beacon<br/>kill listener, delete state]
+  G --> I[write cache] --> H
+```
+
+Four rules it will not break:
+
+- **Never auto-selects.** Better labels make the browser question better, not optional.
+- **Never invents a label.** A failed probe downgrades to `unreachable` and gets out of
+  the way. It does not block the task.
+- **Leaves nothing behind.** Beacon dies on its TTL, `stop` kills the listener and deletes
+  its state, every tab it opens it closes. Pre-existing tabs are never touched.
 - **A `selftest` pass is not proof of reachability.** Traffic from this Mac to its own LAN
-  IP short-circuits internally and never crosses the wire. The scripts say so in their own
-  output rather than letting you conclude otherwise.
+  IP short-circuits internally and never crosses the wire. The tool says so itself rather
+  than letting you conclude otherwise.
 
-## What the other person sees
+## If someone else sees the tab
 
-If a probed browser is on someone else's desk, a tab opens for a moment showing:
+A probed browser on another desk shows one page for a moment:
 
-> **chrome-pick — this browser has been identified**
-> Claude Code opened this tab only to work out which machine this Chrome is running on, by
-> looking at the network address the request came from. Nothing was read from this browser
-> and nothing was sent anywhere. You can close this tab.
+> **chrome-pick — this browser has been identified.** Claude Code opened this tab only to
+> work out which machine this Chrome is running on, by looking at the network address the
+> request came from. Nothing was read from this browser and nothing was sent anywhere.
 
-The probe URL carries a deviceId and a random ephemeral nonce. Nothing else. The beacon
-is token-gated (a wrong token gets a 403 and records no hit), binds an ephemeral port,
-and dies on its TTL.
+The probe URL carries a deviceId and a random nonce. Nothing else. Wrong token gets a 403
+and records no hit.
 
 ## Limits
 
-- **macOS only.** It shells out to `/sbin/ifconfig`, `/sbin/route` and `/usr/sbin/arp`.
-- **It separates machines, not profiles.** Two Chrome installs on the *same* Mac both
-  answer from the same address and both label `this-mac`.
-- **A firewall or full-tunnel VPN can make a real browser look `unreachable`.** That is
-  reported as a caveat, never as a conclusion. `reference/troubleshooting.md` covers the
-  twelve failure modes we hit in practice, including ProtonVPN's kill switch, macOS
-  stealth mode, and `navigate` silently upgrading a `http://` probe URL to HTTPS.
+- **macOS only** — shells out to `ifconfig`, `route`, `arp`.
+- **Separates machines, not profiles.** Two Chromes on one Mac both answer from the same
+  address and both read `this-mac`.
+- **A firewall or full-tunnel VPN can make a real browser look `unreachable`.** Reported as
+  a caveat, never a conclusion. [`reference/troubleshooting.md`](skill/reference/troubleshooting.md)
+  covers twelve failure modes seen in practice — ProtonVPN's kill switch, macOS stealth
+  mode, `navigate` silently upgrading `http://` to HTTPS.
 
 ## Tests
 
@@ -126,14 +108,11 @@ and dies on its TTL.
 /usr/bin/python3 -m unittest discover -s test -v
 ```
 
-Twelve end-to-end tests. They run the real scripts under a temporary `HOME`, so your own
-cache is never touched, and simulate a browser with `urllib` — the beacon classifies on
-source IP alone, so a request from this machine is indistinguishable from Chrome's. They
-cover the full lifecycle (start → probe → classify → stop → port closed), token
-rejection, cache invalidation rules, and the fact that a human-set label survives every
-re-probe.
+Twelve end-to-end tests against the real scripts, under a temporary `HOME` so your own
+cache is untouched. Full lifecycle (start → probe → classify → stop → port closed), 403 on
+a bad token, cache invalidation rules, and a human-set label surviving every re-probe.
 
-What they cannot cover is a genuinely remote browser: that needs a second machine.
+A genuinely remote browser can't be tested here — that needs a second machine.
 
 ## License
 
