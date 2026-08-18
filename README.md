@@ -18,15 +18,40 @@ Names are ordinals. Both `isLocal: true`. If Chrome is open on your desktop *and
 laptop, "open this page" is a coin flip — and half the time it lands on the machine you
 are screen-sharing.
 
-chrome-pick makes every connected browser fetch one URL from a temporary local server,
-then names each one by the source IP the request arrived from:
+chrome-pick makes every connected browser fetch one URL from a temporary local server, then
+names each one by the source IP the request arrived from — so `Browser 2` becomes
+`work laptop · 10.0.0.57 · Windows` before anything gets driven.
 
-```text
-Before                          After
-1. Browser 1                    1. Browser 1 — this Mac (e324d16a)      [Recommended]
-2. Browser 2                    2. Browser 2 — work laptop (2175f1c8)
-                                   source 10.0.0.57 · work-mbp.lan · Windows
-```
+## What it plugs into
+
+Claude Code ships a built-in **claude-in-chrome** skill, loaded automatically before any
+`mcp__claude-in-chrome__*` tool runs. That skill is what actually drives the browser —
+clicking elements, filling forms, capturing screenshots, reading console logs and
+navigating — in new tabs inside your existing Chrome session, gated by the site-level
+permissions you set in the extension.
+
+It also carries one hard rule, quoted from the skill itself:
+
+> Before any browser action, you MUST call [`list_connected_browsers`] … with a question
+> listing EVERY connected browser as a separate option (use the display name as the label,
+> and include the deviceId in parentheses) … **Do not skip any connected browser and do not
+> pick one yourself.**
+
+The rule is right: nothing should silently choose which machine gets driven. The problem is
+what it has to work with. The display names it is told to use as labels are ordinals, so
+the safety mechanism ends up asking a question you have no way to answer:
+
+| | Built-in skill alone | With chrome-pick |
+|---|---|---|
+| **Option 1** | `Browser 1` | `Browser 1 — this Mac (e324d16a)` **[Recommended]** |
+| **Option 2** | `Browser 2` | `Browser 2 — work laptop (2175f1c8)` |
+| **Evidence** | none | `source 10.0.0.57 · work-mbp.lan · Windows · high confidence` |
+| **Cost** | — | nothing on a cached run |
+
+chrome-pick does not replace that skill, remove its question, or answer it for you. It runs
+first and fills in the labels, then hands the informed choice back. It also marks the
+browser that matches your target as recommended — a home-LAN address gets `this-mac` — so
+the common case is one keystroke rather than a guess.
 
 ## Install
 
