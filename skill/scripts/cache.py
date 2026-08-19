@@ -128,6 +128,81 @@ def _relabel(entry):
 # --------------------------------------------------------------------------
 
 
+def cmd_resolve(args):
+    """Decide which browser to use without asking, when the evidence allows.
+
+    Display names are positional ordinals and get reassigned on reconnect, so
+    nothing here trusts a name -- only deviceIds and probed machine labels.
+    """
+    devices = _parse_devices(args.devices)
+    data, hard_status = _load()
+
+    if data is None:
+        _out({"decided": False, "reason": "no cache -- probe first", "needsProbe": True})
+        return
+
+    browsers = data.get("browsers", [])
+    by_id = {b.get("deviceId"): b for b in browsers}
+    live = [by_id[d] for d in devices if d in by_id] if devices else browsers
+    unknown = [d for d in devices if d not in by_id]
+
+    if unknown:
+        _out({"decided": False, "reason": "a connected browser has no cached label",
+              "unknownDevices": unknown, "needsProbe": True})
+        return
+
+    # 1. An explicit standing preference the user set, if it is connected.
+    preferred = [b for b in live if b.get("preferred")]
+    if len(preferred) == 1:
+        b = preferred[0]
+        _out({"decided": True, "deviceId": b["deviceId"],
+              "why": "the browser you set as preferred",
+              "userLabel": b.get("userLabel"), "machine": b.get("machine")})
+        return
+
+    # 2. Exactly one connected browser is on this Mac.
+    here = [b for b in live if b.get("machine") == "this-mac"]
+    if len(here) == 1:
+        b = here[0]
+        _out({"decided": True, "deviceId": b["deviceId"],
+              "why": "the only connected browser on this Mac",
+              "userLabel": b.get("userLabel"), "machine": b.get("machine")})
+        return
+
+    if len(live) == 1:
+        b = live[0]
+        _out({"decided": True, "deviceId": b["deviceId"],
+              "why": "the only connected browser",
+              "userLabel": b.get("userLabel"), "machine": b.get("machine")})
+        return
+
+    _out({"decided": False,
+          "reason": "%d browsers on this Mac -- genuinely ambiguous" % len(here) if here
+                    else "no connected browser is known to be on this Mac",
+          "candidates": [{"deviceId": b.get("deviceId"), "machine": b.get("machine"),
+                          "userLabel": b.get("userLabel")} for b in live]})
+
+
+def cmd_prefer(args):
+    """Set a standing choice, so resolve stops asking. Survives re-probes."""
+    data, _ = _load()
+    if data is None:
+        _fail("no cache yet -- probe before setting a preference")
+        return
+    found = False
+    for b in data.get("browsers", []):
+        if b.get("deviceId") == args.device:
+            b["preferred"] = True
+            found = True
+        else:
+            b.pop("preferred", None)
+    if not found:
+        _fail("no cached browser with deviceId %s" % args.device)
+        return
+    _save(data)
+    _out({"preferred": args.device})
+
+
 def cmd_read(args):
     devices = _parse_devices(args.devices)
     data, hard_status = _load()
@@ -403,6 +478,14 @@ def main(argv=None):
     p_unlabel = sub.add_parser("unlabel")
     p_unlabel.add_argument("--device", required=True)
     p_unlabel.set_defaults(func=cmd_unlabel)
+
+    p_resolve = sub.add_parser("resolve")
+    p_resolve.add_argument("--devices", default="")
+    p_resolve.set_defaults(func=cmd_resolve)
+
+    p_prefer = sub.add_parser("prefer")
+    p_prefer.add_argument("--device", required=True)
+    p_prefer.set_defaults(func=cmd_prefer)
 
     sub.add_parser("clear").set_defaults(func=cmd_clear)
     sub.add_parser("show").set_defaults(func=cmd_show)
