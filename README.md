@@ -142,3 +142,18 @@ A genuinely remote browser can't be tested here — that needs a second machine.
 ## License
 
 MIT
+
+## Codex
+
+Codex has a separate Chrome runtime. Install its small adapter instead of the
+Claude extension's device-ID/beacon workflow:
+
+```bash
+mkdir -p "$HOME/.agents/skills"
+ln -s "$PWD/skill-codex" "$HOME/.agents/skills/chrome-pick"
+```
+
+Run this from the repository root, then start a new Codex conversation. Inspect
+an existing destination before replacing it. The adapter requires Codex's
+Chrome plugin and follows its supported browser selection/troubleshooting.
+It does not port the Claude extension's multi-machine beacon functionality.
