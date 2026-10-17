@@ -10,12 +10,19 @@ Exit 0 on success, 1 on error (payload is then {"error": "..."}).
 Subcommands:
   read  --devices <csv>        cache status + labelled browsers for those deviceIds
   write --from-probe <path|->  merge a `beacon.py stop` report in (keeps userLabel)
+  resolve --devices <csv>      pick a browser from the cache without asking, if it can
+  prefer --device <id>         set a standing choice `resolve` honours first
   label --device <id> --label "work laptop"    set a sticky human label
   unlabel --device <id>        clear the sticky human label
   clear                        delete the cache
   show                         dump the cache verbatim
 
 A userLabel set by the human is NEVER discarded by any re-probe or invalidation.
+
+These labels exist to stop the wrong machine being driven, not to generate questions.
+One connected browser, or exactly one identifiable as this Mac, is decided and used
+with the assumption stated out loud. Only a genuine tie -- several here, or none
+identifiable as here -- is worth putting to the human.
 """
 
 import argparse
@@ -130,6 +137,11 @@ def _relabel(entry):
 
 def cmd_resolve(args):
     """Decide which browser to use without asking, when the evidence allows.
+
+    Decided, so nothing is asked: a standing `prefer`, else exactly one
+    connected browser on this Mac, else a single connected browser. A
+    `decided: false` means the choice is genuinely ambiguous -- several here,
+    or none known to be here -- which is the one case that warrants asking.
 
     Display names are positional ordinals and get reassigned on reconnect, so
     nothing here trusts a name -- only deviceIds and probed machine labels.
@@ -346,6 +358,9 @@ def cmd_write(args):
             "note": record.get("note"),
             "classifiedAt": classified_at,
         }
+        # A standing `prefer` is human-set too, so it survives a re-probe.
+        if prior.get("preferred"):
+            entry["preferred"] = True
         merged.append(_relabel(entry))
 
     # Keep cached entries for browsers that were not part of this probe, so a

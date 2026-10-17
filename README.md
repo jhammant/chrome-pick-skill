@@ -37,9 +37,11 @@ It also carries one hard rule, quoted from the skill itself:
 > and include the deviceId in parentheses) … **Do not skip any connected browser and do not
 > pick one yourself.**
 
-The rule is right: nothing should silently choose which machine gets driven. The problem is
-what it has to work with. The display names it is told to use as labels are ordinals, so
-the safety mechanism ends up asking a question you have no way to answer:
+The rule is right: nothing should silently choose which machine gets driven. Read it as
+scoped to what it is protecting against — driving the *wrong machine* — which takes two
+candidates to be possible at all. The problem is what it has to work with. The display
+names it is told to use as labels are ordinals, so on the runs where the question genuinely
+matters it ends up asking one you have no way to answer:
 
 | | Built-in skill alone | With chrome-pick |
 |---|---|---|
@@ -49,9 +51,35 @@ the safety mechanism ends up asking a question you have no way to answer:
 | **Cost** | — | nothing on a cached run |
 
 chrome-pick does not replace that skill, remove its question, or answer it for you. It runs
-first and fills in the labels, then hands the informed choice back. It also marks the
-browser that matches your target as recommended — a home-LAN address gets `this-mac` — so
-the common case is one keystroke rather than a guess.
+first and fills in the labels, then hands the informed choice back — on the runs where
+there is a choice to hand back. It also marks the browser that matches your target as
+recommended — a home-LAN address gets `this-mac` — so the common case is one keystroke
+rather than a guess.
+
+## When it asks
+
+A question with one possible answer is not a safety mechanism, it is friction. So the
+prompt is reserved for real ambiguity. After `list_connected_browsers`:
+
+| What is connected | What happens |
+|---|---|
+| **One browser** | Uses it. No question — the one option and the "select the right one there" fallback are the same browser. |
+| **Several, exactly one of them this machine** | Defaults to that one. No question. |
+| **Several, and this machine is none of them or more than one** | **Asks** — every browser listed, plus the exact final option, nothing picked for you. |
+| **Several, and the probe can't tell** | **Asks**, the same way. Not knowing is the case the rule exists for. |
+
+Whether a browser is this machine comes from `isLocal` first, then the cache, then a probe
+— and a lone browser already reporting `isLocal: true` is not probed at all.
+
+Neither of the first two rows is skipping the rule: its precondition — more than one
+machine you could plausibly be driving — is not met. And nothing goes silent. The
+assumption is stated in one clause as it acts, "using the only connected Chrome (this
+Mac)" or "defaulting to the Chrome on this Mac", so a wrong browser stays visible and
+correctable without a blocking prompt in front of every task.
+
+You override it whenever you like. "wrong browser", "which chrome", "pick the browser",
+"that's my work laptop" or naming a machine gets you the question — or that machine
+directly. "re-probe" forces fresh labels.
 
 ## Install
 
@@ -78,26 +106,33 @@ browser", "which chrome", "that's my work laptop", or "re-probe".
 | Nothing arrived | `unreachable` | Different network, or a VPN on that machine |
 
 Labels are cached in `~/.claude/chrome-browsers.json`, so the usual run costs nothing —
-no probe, just a labelled question. It re-probes only when a label could be wrong: an
-unknown browser appears, or this Mac moved to another LAN where `10.0.0.57` no longer
-means what it did yesterday. A browser going offline invalidates nothing.
+no probe, just a label to act on, or a labelled question when it is genuinely ambiguous.
+It re-probes only when a label could be wrong: an unknown browser appears, or this Mac
+moved to another LAN where `10.0.0.57` no longer means what it did yesterday. A browser
+going offline invalidates nothing.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  A[list browsers] --> B{cache fresh?}
-  B -->|yes| H[labelled question]
+  A[list browsers] --> N{more than one?}
+  N -->|no| U[use it · say so]
+  N -->|yes| B{cache fresh?}
+  B -->|yes| H{one of them<br/>this machine?}
   B -->|no| D[start beacon<br/>ephemeral port · token · TTL]
   D --> E[each browser opens<br/>the probe URL, then closes]
   E --> F[classify by source IP]
   F --> G[stop beacon<br/>kill listener, delete state]
   G --> I[write cache] --> H
+  H -->|yes| V[default to it · say so]
+  H -->|no or unclear| Q[labelled question]
 ```
 
 Four rules it will not break:
 
-- **Never auto-selects.** Better labels make the browser question better, not optional.
+- **Never silently picks the machine.** Where two or more could be the one you mean, it
+  asks — every browser listed, nothing chosen for you; better labels make that question
+  better, not optional. Where only one can be, it uses it and says so as it acts.
 - **Never invents a label.** A failed probe downgrades to `unreachable` and gets out of
   the way. It does not block the task.
 - **Leaves nothing behind.** Beacon dies on its TTL, `stop` kills the listener and deletes
@@ -124,7 +159,7 @@ and records no hit.
   address and both read `this-mac`.
 - **A firewall or full-tunnel VPN can make a real browser look `unreachable`.** Reported as
   a caveat, never a conclusion. [`reference/troubleshooting.md`](skill/reference/troubleshooting.md)
-  covers twelve failure modes seen in practice — ProtonVPN's kill switch, macOS stealth
+  covers thirteen failure modes seen in practice — ProtonVPN's kill switch, macOS stealth
   mode, `navigate` silently upgrading `http://` to HTTPS.
 
 ## Tests

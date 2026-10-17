@@ -4,8 +4,17 @@ Read this when a probe fails, mislabels, or behaves oddly. The governing rule fo
 everything below:
 
 > **A failed probe never blocks the task and never invents a label.** It downgrades to
-> `unreachable` / low confidence, and the mandatory question proceeds — with the
-> confirmation-screen option weighted more heavily in the recommendation.
+> `unreachable` / low confidence. What happens next depends on what is still
+> distinguishable — not on the probe having succeeded.
+
+- **One browser connected** — use it and say so. A failed probe changes nothing: there is
+  nothing to disambiguate.
+- **Two or more, exactly one still identifiable as this machine** (`isLocal:true`, or a
+  cached label you can still justify) — default to it and state the assumption as you act.
+- **Two or more and you genuinely cannot tell** — none identifiable as this machine, two or
+  more tied, or the probe inconclusive — *this* is the ambiguous case the choice question
+  exists for. Ask, listing every browser plus the exact final option, with the
+  confirmation-screen option weighted more heavily in the recommendation.
 
 ---
 
@@ -77,8 +86,12 @@ interfaces classify as `tunnel` and are never probed.
 
 ### 6. Beacon cannot bind at all
 
-`start` returns `{"error": ...}`. Skip probing entirely, go to the mandatory question with
-unlabelled options, and recommend the confirmation-screen route first.
+`start` returns `{"error": ...}`. Skip probing entirely and fall back to what you already
+have: `isLocal` from `list_connected_browsers`, then the cache. One browser — or two or
+more with exactly one still identifiable as this machine — still needs no question: use it
+and say which. Only when that leaves the machine genuinely ambiguous do you go to the
+choice question, with unlabelled options and the confirmation-screen route recommended
+first.
 
 ### 7. `navigate` silently upgrading to HTTPS
 
@@ -94,8 +107,8 @@ plain HTTP, so an HTTPS request to it fails.
 Chrome's **HTTPS-First mode** can also attempt an upgrade even on an explicit `http://`
 URL. Raw IP literals are normally exempt, but if you see an interstitial instead of the
 beacon page, this is the cause. It is a browser setting, not a network problem — do not
-record the device as `unreachable`; note the interstitial and fall back to the
-confirmation-screen option.
+record the device as `unreachable`; note the interstitial, and if that leaves the machine
+ambiguous, fall back to the confirmation-screen option.
 
 ### 8. Extension refuses to navigate (site permissions)
 
@@ -106,8 +119,8 @@ a URL, and a raw `http://10.0.0.110:58962` origin has never been granted one.
 
 **Behaviour:** this is a **permissions failure, not a network failure**. Do not classify
 the device `unreachable` — that would state something false about the network. Report that
-the extension blocked the probe and offer the confirmation-screen option, which needs no
-site permission.
+the extension blocked the probe. If the machine is still ambiguous afterwards, offer the
+confirmation-screen option — it needs no site permission.
 
 ### 9. Tab closed too early
 
@@ -119,8 +132,10 @@ site permission.
 ### 10. Everything classifies `this-mac`
 
 Both browsers really are on this Mac (two Chrome profiles or channels). That is a valid
-result — the source IP genuinely is local for both. Distinguish them by `userAgent` and
-give them user labels:
+result — the source IP genuinely is local for both. It is also a genuine tie, so it is one
+of the cases that *does* warrant the choice question: two browsers claim this machine and
+nothing separates them. Ask, then distinguish them by `userAgent` and give them user labels
+so the next question names them instead of offering two identical rows:
 
 ```bash
 /usr/bin/python3 ~/.claude/skills/chrome-pick/scripts/cache.py label \
@@ -152,6 +167,32 @@ left listening — but a slow loop over several browsers can outlive it.
 **new port and a new token**, so re-read `probeUrls` / `loopbackProbe` from the fresh
 output; the old URLs now return 403 or nothing. Pass a longer `--ttl` when several browsers
 are connected. Watch `expiresIn` in `status` to see it coming.
+
+### 13. It picked a browser and never asked which one
+
+**Symptom:** no choice question appeared; Claude just acted, saying something like "using
+the only connected Chrome (this Mac)" or "defaulting to the Chrome on this Mac".
+
+**Cause:** intended behaviour, not a bug. The question is for a genuine ambiguity — two or
+more browsers where none, or more than one, is identifiable as this machine. One connected
+browser, or exactly one identifiable as this machine, has a single correct answer, so it is
+stated in a clause as Claude acts instead of being asked as a blocking prompt. That clause
+is the hook: if it names the wrong machine, say so and the choice comes back.
+
+**Getting the chooser back on demand:** it is one phrase away. "wrong browser", "which
+chrome", "pick the browser", "wrong machine", "that's my work laptop", or naming a machine
+("use my work laptop") all re-run this skill and ask — every connected browser listed, plus
+the exact confirmation-screen option. Add "re-probe" / "refresh the browsers" to force a
+fresh probe first, so the options come back re-labelled rather than from cache.
+
+**Making the right browser win the default:** label the machines once. A `userLabel`
+survives every re-probe and every invalidation, so later runs can tell them apart by name
+instead of falling back to a question —
+
+```bash
+/usr/bin/python3 ~/.claude/skills/chrome-pick/scripts/cache.py label \
+  --device <deviceId> --label "work laptop"
+```
 
 ---
 

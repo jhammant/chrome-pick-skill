@@ -24,27 +24,86 @@ practice — the **work laptop** got navigated to the **home** router's admin UI
 cert error.
 
 This skill bounces each browser off a short-lived HTTP beacon on this Mac and labels it
-by **the source IP the beacon sees**. Then it feeds those labels into the mandatory
-`AskUserQuestion`.
+by **the source IP the beacon sees**. Those labels drive the decision below: drive the
+browser on **this machine** by default, and spend an `AskUserQuestion` only when which
+browser is right is genuinely ambiguous.
 
 Two things this skill does **not** do:
 
 - It does not lock onto one browser. The user drives more than one deliberately; the goal
-  is accurate labels so an informed choice is possible.
-- It does not skip, replace, or excuse the mandatory browser-choice question. Better
-  labels make that question **better**, not optional.
+  is accurate labels, so the right browser gets driven — and so a real choice, when there
+  is one, is an informed choice.
+- It does not skip, replace, or excuse the browser-choice question **when there is a real
+  choice to make** — two or more browsers, and no way to tell which one is this machine.
+  Better labels make that question **better**, not optional. But a question whose answers
+  all resolve to the same browser is not a choice — see the decision table below.
 
 ## When this fires
 
-- At the **start of any** `mcp__claude-in-chrome__*` task, before the first browser action.
-- "wrong browser", "wrong machine", "which chrome", "which browser are you using",
-  "pick the right browser", "that's my work laptop", "not that one".
-- Any time `list_connected_browsers` returns more than one browser.
+**The identification fires on every browser task. The question does not.**
+
+- At the **start of any** `mcp__claude-in-chrome__*` task, before the first browser action:
+  Step 1, plus as much of Steps 2–7 as the evidence needs. That is identification, not a
+  prompt.
+- The `AskUserQuestion` fires on **ambiguity**: two or more browsers connected and no way
+  to tell which one is this machine (Step 8).
+- It also fires on an **explicit user signal**, which always overrides the default:
+  "wrong browser", "wrong machine", "which chrome", "which browser are you using",
+  "pick the right browser", "that's my work laptop", "not that one". A signal that *names*
+  a machine — "use my work laptop" — is not a question: select that browser.
 - "re-probe", "refresh the browsers", "re-identify" → force a fresh probe (Step 5).
 
-Single browser connected? You may skip probing — but Step 8 still happens. Probe anyway
-(it is one tab) when the task targets a home-LAN resource, so you can state whether that
-one browser is actually on this Mac rather than assuming it.
+## The decision — one table
+
+Run it on what `list_connected_browsers` returned (Step 1), once Steps 2–7 have supplied
+whatever labels they can:
+
+| Connected | On this machine | Do |
+|---|---|---|
+| Exactly one browser | — | **Use it.** No `AskUserQuestion`. |
+| Two or more | Exactly one is identifiable as this machine | **Default to it.** No `AskUserQuestion`. |
+| Two or more | None identifiable, or two or more tie, or the probe was inconclusive/unreachable | **Ask** — Step 8, listing every browser plus the exact final option. |
+| Any | — | An explicit user signal wins: select the browser they named, or ask if they asked to pick. |
+
+Whichever branch you take, **state the assumption in one short clause as you act** —
+"using the only connected Chrome (this Mac)", "defaulting to the Chrome on this Mac" — so
+a wrong browser stays visible and correctable without a blocking prompt.
+
+### Exactly one browser connected → do NOT ask
+
+If `list_connected_browsers` returns **exactly one** browser, use it — Step 8 does not
+run, and `AskUserQuestion` is not called. There is nothing to disambiguate: the only
+option and the fallback ("let me select the right one there") both resolve to the same
+browser, so the question is pure friction and reads as the assistant not thinking.
+
+Skip probing too when that one browser reports `isLocal: true` — just proceed and say
+which browser you used. Probe (it is one tab) only when `isLocal` is false/absent **and**
+the task targets a home-LAN resource, so you can state whether it can actually reach the
+LAN rather than assuming it.
+
+State the assumption in one clause as you act — "using the only connected Chrome (this
+Mac)" — so a wrong browser is still visible and correctable, without a blocking prompt.
+
+### Two or more, exactly one on this machine → default to it
+
+Work out which connected browsers are on **this machine**, cheapest evidence first:
+
+1. `isLocal: true` from `list_connected_browsers` — necessary, not sufficient. It is true
+   for both browsers in the JSON at the top of this page, so it only narrows the field.
+2. The cache (Step 2). `cache.py resolve --devices <devices>` applies this same rule to the
+   cached labels: `{"decided": true, "deviceId": ...}` with a `why` when the evidence
+   settles it, `decided:false` plus `candidates` (or `needsProbe`) when it does not.
+3. A probe (Steps 4–7), when the cache cannot settle it.
+
+If exactly one connected browser comes out as this machine, **use it — do not ask**. This
+is the user's standing preference: default to the browser on their own machine. Name the
+browser you defaulted to in one clause as you act.
+
+### Genuinely ambiguous → ask
+
+No connected browser identifiable as this machine, two or more tying as this machine, or a
+probe that came back inconclusive or unreachable so you honestly cannot tell — **that** is
+the case Step 8 exists for. Ask, list every browser, and do not pick for the user.
 
 ## Ground rules
 
@@ -53,7 +112,7 @@ one browser is actually on this Mac rather than assuming it.
 - The beacon self-terminates via TTL. Never leave a port listening.
 - The probe URL carries only a deviceId and a random ephemeral nonce. Nothing secret.
 - `select_browser` mutates **global** state shared with whatever else is using the
-  browser. Always finish on the browser the user actually chose (Step 7).
+  browser. Always finish on the browser you settled on — chosen or defaulted (Step 9).
 
 ---
 
@@ -78,8 +137,8 @@ does not make the others' labels wrong.
 
 | `status` | Meaning | Do |
 |---|---|---|
-| `fresh` | Labels valid | **Skip to Step 8** |
-| `stale` | Older than 30 days | **Skip to Step 8**, mark labels "unverified", offer a refresh |
+| `fresh` | Labels valid | **Skip the probe** — run the decision table on the cached labels |
+| `stale` | Older than 30 days | **Skip the probe** — a stale `this-mac` label is still enough to default on; call it "unverified" and offer a refresh |
 | `missing` | No cache yet (or unreadable) | Probe (Step 4) |
 | `version-mismatch` | Schema changed | Probe |
 | `device-set-changed` | A connected browser has no cached label | Probe — `unknownDevices` names them |
@@ -89,19 +148,26 @@ An explicit user request to re-probe overrides `fresh`/`stale`.
 
 ## Step 3 — the common path
 
-Most runs land on `fresh`. That is the point: **one well-labelled question, no probing.**
-Only continue to Step 4 when the table above says to probe.
+Most runs land on `fresh`. That is the point: **a well-labelled decision, no probing** —
+and usually no question either, because the cache already says which browser is this
+machine. Only continue to Step 4 when the table above says to probe.
 
 ## Step 4 — get consent to probe
 
 Probing opens and closes a tab in **every** connected browser, including someone else's
 screen. That needs consent. Probing is itself a browser action (`select_browser`,
-`tabs_create_mcp`, `navigate`), so this consent question must obey the Step 8 rule too:
-every option list below ends with the exact final option, verbatim.
+`tabs_create_mcp`, `navigate`), and if you are probing at all the target browser is by
+definition still ambiguous, so this consent question obeys the Step 8 rule too: every
+option list below ends with the exact final option, verbatim.
+
+**Exactly one browser connected → no consent question.** The probe is a single tab in the
+one browser you were going to drive anyway: open it, say you are checking whether it can
+reach the LAN, close it. (Usually you do not probe at all — see the single-browser rule
+above.)
 
 `AskUserQuestion` allows a **maximum of 4 options**. Shape the question accordingly:
 
-**Two or fewer browsers** — one question covers consent and the mandatory ask:
+**Two browsers** — one question covers consent and the choice:
 
 ```text
 1. Identify all browsers  (Recommended)
@@ -123,13 +189,15 @@ Then act on the answer:
 
 | Answer | Do |
 |---|---|
-| `Identify all browsers` | Probe (Step 5), **then still run Step 8** with the labels |
+| `Identify all browsers` | Probe (Step 5), **then run the decision table** on the labels — which often resolves without asking |
 | A specific browser | Honour it, skip probing, go to Step 9 |
 | `Skip probing` / consent declined | Go straight to Step 8 with unlabelled options |
 | The exact final option | Skip probing, go to Step 9 and call `switch_browser` |
 
-**This question does not discharge Step 8.** Consenting to a probe is not choosing a
-browser. Whenever probing happens, the labelled question at Step 8 happens after it.
+**This question does not decide anything.** Consenting to a probe is not choosing a
+browser. Whenever probing happens, run the decision table on the labels afterwards: it
+resolves silently when exactly one browser turns out to be this machine, and asks (Step 8)
+when it does not.
 
 ## Step 5 — probe loop
 
@@ -146,8 +214,10 @@ asserting "different network"; `0` is off and `null` means it could not be deter
 (treat as possibly on).
 
 If this returns `{"error": ...}`, the beacon did not come up — it could not bind, could not
-be spawned, or did not report ready within 5s. Skip probing entirely, go to Step 8 with
-unlabelled options, and weight the confirmation-screen option first.
+be spawned, or did not report ready within 5s. Skip probing entirely and fall back on the
+evidence you already have. With two or more browsers and nothing left to separate them
+that is the ambiguous case: go to Step 8 with unlabelled options and weight the
+confirmation-screen option first. With one browser, use it and say so.
 
 ```bash
 /usr/bin/python3 ~/.claude/skills/chrome-pick/scripts/beacon.py selftest
@@ -160,7 +230,7 @@ read `mode` rather than the booleans:
 |---|---|---|
 | `full` | LAN socket reachable locally | Probe LAN URLs first, as normal |
 | `loopback-only` | Bound, but no usable LAN address | Probe **only** `loopbackProbe` — that still positively identifies **this Mac**; everything else becomes `unreachable` |
-| `unusable` | Not even loopback answers | Do not probe at all. Go to Step 8 with unlabelled options and weight the confirmation-screen option first |
+| `unusable` | Not even loopback answers | Do not probe at all — decide on the evidence you have. Two or more browsers with nothing to separate them → Step 8, unlabelled options, confirmation-screen option first |
 
 > `selftest` proves the socket is bound and not blocked locally. It **cannot** prove a
 > remote machine can reach it — traffic from this Mac to its own LAN IP short-circuits
@@ -308,11 +378,21 @@ different network — you cannot tell the two apart. A failed probe degrades con
 never blocks the task.
 
 `select_browser` is global state and the loop leaves the *last probed* browser selected.
-Never stop there — Step 9 explicitly re-selects the user's actual choice.
+Never stop there — Step 9 explicitly re-selects the browser you settled on, whether the
+user chose it or you defaulted to it.
 
-## Step 8 — the mandatory question (always happens)
+## Step 8 — the choice question (only when the right browser is genuinely ambiguous)
 
-This rule comes from `list_connected_browsers` itself and is reproduced verbatim:
+**Precondition: two or more browsers are connected *and* you cannot tell which one is this
+machine** — or the user asked to choose. With exactly one browser connected, or with
+exactly one identifiable as this machine, this step does not run at all: see the decision
+table above.
+
+This rule comes from `list_connected_browsers` itself and is reproduced verbatim. Read it
+as **scoped to a genuine multi-browser ambiguity**. Its purpose is to stop the assistant
+silently driving the **wrong machine** — a risk that does not exist when only one browser
+is connected, and one already discharged when exactly one browser is identifiable as this
+machine and you say which one you are driving as you act:
 
 > Before any browser action, you MUST call the AskUserQuestion tool with a question
 > listing EVERY connected browser as a separate option (use the display name as the
@@ -320,8 +400,11 @@ This rule comes from `list_connected_browsers` itself and is reproduced verbatim
 > "Open a confirmation screen in every connected Chrome extension and let me select the
 > right one there." Do not skip any connected browser and do not pick one yourself.
 
-**Accurate labels make this question better. They do not remove it.** Nothing in this
-skill authorises skipping it.
+**Once the precondition is met, accurate labels make this question better — they do not
+remove it.** Nothing in this skill authorises skipping it, thinning the option list, or
+picking for the user when the right browser is genuinely ambiguous. The single-browser and
+clear-local-default cases are not skips: the step's precondition simply is not met, because
+there is nothing left to disambiguate.
 
 Compose the options:
 
@@ -334,17 +417,27 @@ Compose the options:
 - **Order:** recommended browser **first**, with `(Recommended)` in the label if it fits.
   The exact final string is **always last**.
 - **Recommend by target, never auto-select:** a home-LAN resource (the router's admin UI,
-  a NAS, an internal-only hostname) → the `this-mac` browser. Otherwise carry the previous
-  choice.
+  a NAS, an internal-only hostname) → the `this-mac` browser; likewise when the user asked
+  to pick even though one browser *is* this Mac. Otherwise carry the previous choice.
 - **More than 3 browsers:** the 4-option cap collides with "list EVERY browser". List the
   3 most likely plus the exact final option, and state in the question text that N others
   exist and the confirmation-screen option reaches them. This is a platform cap being
   worked around — not licence to quietly drop browsers.
 
-## Step 9 — act on the answer
+## Step 9 — act on the decision
 
-- A specific browser → `mcp__claude-in-chrome__select_browser { "deviceId": "<full deviceId>" }`,
-  then proceed with the real task.
+- **No question asked** (one browser, or one clear local default) → `select_browser` with
+  that deviceId unless it is already selected, name the browser in one clause, and get on
+  with the task.
+- A specific browser the user chose → `mcp__claude-in-chrome__select_browser { "deviceId": "<full deviceId>" }`,
+  then proceed with the real task. If they had to choose because the labels tied, offer to
+  make it stick:
+
+  ```bash
+  /usr/bin/python3 ~/.claude/skills/chrome-pick/scripts/cache.py prefer --device <deviceId>
+  ```
+
+  `cache.py resolve` returns a `preferred` browser ahead of every other rule.
 - The final option → `mcp__claude-in-chrome__switch_browser {}` (no arguments). This
   prompts every connected extension and waits up to 2 minutes for the user to click
   Connect; they can also name the browser there. `switch_browser` does not tell you which
@@ -363,7 +456,7 @@ Compose the options:
 
 ## Worked example
 
-**Before** — indistinguishable, a coin flip:
+**Before** — indistinguishable, so the question was the only way out of a coin flip:
 
 ```text
 1. Browser 1 (e324d16a-c186-4ece-944c-42905e74c5df)
@@ -371,20 +464,30 @@ Compose the options:
 3. Open a confirmation screen in every connected Chrome extension and let me select the right one there.
 ```
 
-**After** — same question, now answerable at a glance:
+**After** — the probe answers it, so there is nothing left to ask:
+
+```text
+Browser 1 (e324d16a) · hit the beacon from 127.0.0.1 · macOS · high · just probed  → this Mac
+Browser 2 (2175f1c8) · source 10.0.0.57 · work-mbp.lan · Windows · high · just probed  → work laptop
+```
+
+Exactly one is this machine, so drive Browser 1 and say so in passing — "defaulting to the
+Chrome on this Mac (Browser 1)". No prompt. The cert-error incident becomes impossible to
+repeat: the router's admin UI is a LAN resource, Browser 1 is the machine that can reach
+it, and Browser 2 is visibly the work laptop.
+
+**Still ambiguous** — say both came back `unreachable`, or both classified `this-mac` —
+then Step 8 runs, and the same labels make it answerable at a glance:
 
 ```text
 1. Browser 1 — this Mac (e324d16a)          [Recommended]
    e324d16a-c186-4ece-944c-42905e74c5df · hit the beacon from 127.0.0.1 · macOS
    · high confidence · just probed
-2. Browser 2 — work laptop (2175f1c8)
-   2175f1c8-b6f5-40af-8022-6ad894f689a2 · source 10.0.0.57 · work-mbp.lan
-   · Windows · high confidence · just probed
+2. Browser 2 — this Mac (2175f1c8)
+   2175f1c8-b6f5-40af-8022-6ad894f689a2 · hit the beacon from 127.0.0.1 · macOS
+   · high confidence · just probed
 3. Open a confirmation screen in every connected Chrome extension and let me select the right one there.
 ```
-
-The cert-error incident becomes impossible to repeat: the router's admin UI is a LAN
-resource, so Browser 1 is recommended, and Browser 2 is visibly the work laptop.
 
 ---
 
@@ -404,12 +507,14 @@ SK=~/.claude/skills/chrome-pick/scripts
 /usr/bin/python3 $SK/cache.py write --from-probe - --names "<id>=Browser 1"
 /usr/bin/python3 $SK/cache.py label   --device <id> --label "work laptop"
 /usr/bin/python3 $SK/cache.py unlabel --device <id>
+/usr/bin/python3 $SK/cache.py resolve --devices <csv>      # decide without asking, if the evidence allows
+/usr/bin/python3 $SK/cache.py prefer  --device <id>        # standing choice; resolve returns it first
 /usr/bin/python3 $SK/cache.py show                         # dump the cache verbatim
 /usr/bin/python3 $SK/cache.py clear                        # discards userLabels too
 ```
 
-`plan`, `fingerprint`, `selftest`, `status`, `read` and `show` are safe to repeat. `start`
-reaps any previous beacon; `stop` runs **once** per probe (see Step 5c).
+`plan`, `fingerprint`, `selftest`, `status`, `read`, `resolve` and `show` are safe to
+repeat. `start` reaps any previous beacon; `stop` runs **once** per probe (see Step 5c).
 
 Probes failing in a way this page does not cover — VPNs, firewall prompts, HTTPS
 upgrades, extension site permissions — see `reference/troubleshooting.md`.
